@@ -1,0 +1,20 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Team Notes Portal - Lambda de metricas del dashboard (Bloque 5A)
+
+Resources:
+  DashboardMetricsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: team-notes-dashboard-metrics
+      Runtime: nodejs22.x
+      Handler: src/handler.handler
+      CodeUri: ./
+      MemorySize: 128
+      Timeout: 10
+      Events:
+        MetricsPost:
+          Type: Api
+          Properties:
+            Method: POST
+            Path: /metrics

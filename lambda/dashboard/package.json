@@ -1,0 +1,10 @@
+{
+  "name": "team-notes-dashboard-metrics",
+  "version": "1.0.0",
+  "description": "Lambda de métricas del dashboard (Bloque 5A)",
+  "main": "src/handler.js",
+  "scripts": {
+    "test": "node --test test/handler.test.js"
+  },
+  "license": "ISC"
+}

@@ -1,0 +1,38 @@
+# === Variables de entorno y secretos ===
+# .env real (raíz): contiene MYSQL_*, JWT_SECRET, etc. — NUNCA al repo.
+.env
+# Cualquier variante (.env.local, .env.production...), en cualquier nivel.
+.env.*
+# Excepción: los ejemplos con placeholders sí se versionan.
+!.env.example
+
+# Backend: mismo esquema dentro de backend/.
+backend/.env
+backend/.env.*
+!.env.example
+
+# === Dependencias ===
+# Instalables con npm ci/install; no se versionan.
+node_modules/
+**/node_modules/
+
+# === Claves privadas y certificados ===
+# Key Pairs EC2 (.pem), claves y contenedores de certificados.
+*.pem
+*.key
+*.p12
+*.pfx
+
+# === Artefactos de build AWS ===
+# Lo genera 'sam build' al desplegar; es reproducible.
+.aws-sam/
+
+# === Logs ===
+logs/
+*.log
+
+# === Temporales del sistema y editores ===
+*.bak
+*.tmp
+.DS_Store
+Thumbs.db

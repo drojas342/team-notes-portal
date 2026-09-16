@@ -1,0 +1,36 @@
+/* Estilos base del Team Notes Portal. Bootstrap cubre la mayor parte del diseño. */
+
+.login-card {
+  width: 100%;
+  max-width: 420px;
+}
+
+.board-empty {
+  min-height: 60vh;
+}
+
+/* Tablero libre: las notas se posicionan con left/top absolutos. */
+.board {
+  position: relative;
+  min-height: 60vh;
+  background-color: #fff;
+  border: 1px solid #dee2e6;
+  border-radius: 0.375rem;
+}
+
+.note-card {
+  position: absolute;
+  width: 250px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.note-card.dragging {
+  cursor: grabbing;
+  user-select: none;
+  z-index: 10;
+}
+
+.note-card .badge {
+  margin-bottom: 0.5rem;
+}

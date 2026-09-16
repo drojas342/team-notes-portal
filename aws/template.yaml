@@ -1,0 +1,249 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Team Notes Portal - infraestructura AWS (EC2 + S3 + CloudFront + Lambda). No incluye secretos.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: team-notes
+    AllowedPattern: '[a-z0-9-]+'
+    Description: Prefijo para nombrar los recursos.
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: Tipo de instancia EC2 para backend + MySQL en Docker.
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Key pair existente para acceso SSH a EC2.
+  SSHLocation:
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: '(\d{1,3}\.){3}\d{1,3}/\d{1,2}'
+    Description: 'CIDR permitido para SSH (recomendado: tu IP publica /32).'
+  ApiPort:
+    Type: Number
+    Default: 3000
+    Description: Puerto del backend Express. Debe seguir siendo 3000 porque docker-compose.yml lo fija (PORT y mapeo 3000:3000).
+  VolumeSize:
+    Type: Number
+    Default: 20
+    MinValue: 8
+    Description: Tamano en GiB del volumen EBS raiz (persiste MySQL).
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: AMI Amazon Linux 2023 (parametro publico SSM, sin hardcodear AMI ID).
+
+Resources:
+  # ---------------- EC2 + red + IAM ----------------
+  BackendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub '${ProjectName}: SSH + API backend'
+      # Puerto 3000 abierto: CloudFront (origen EC2) y los navegadores deben
+      # alcanzarlo. En esta fase no se restringe a IPs de CloudFront
+      # (requeriría lista gestionada de prefijos); MySQL NO se expone
+      # (solo red interna de Docker; el SG no abre 3306/3308).
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHLocation
+        - IpProtocol: tcp
+          FromPort: !Ref ApiPort
+          ToPort: !Ref ApiPort
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-backend-sg'
+
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Solo Session Manager (sin llaves). El backend invoca Lambda por HTTP, sin SDK.
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ec2-role'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-ec2-profile'
+      Roles:
+        - !Ref EC2Role
+
+  BackendInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SecurityGroupIds:
+        - !Ref BackendSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref VolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          dnf install -y docker
+          systemctl enable --now docker
+          usermod -aG docker ec2-user
+          # Plugin docker compose (version fijada para repetibilidad)
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -SL https://github.com/docker/compose/releases/download/v2.35.1/docker-compose-linux-x86_64 \
+            -o /usr/local/lib/docker/cli-plugins/docker-compose
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+          # Directorio de despliegue (el codigo y el .env se copian segun README)
+          mkdir -p /opt/${ProjectName}
+          chown ec2-user:ec2-user /opt/${ProjectName}
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-backend'
+
+  # ---------------- Frontend: S3 + CloudFront (OAC) ----------------
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-frontend-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-frontend'
+
+  FrontendOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${ProjectName}-frontend-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  FrontendDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub '${ProjectName} frontend'
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: s3-frontend
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !Ref FrontendOAC
+          # Segundo origen: backend Express en EC2 (HTTP interno; el viewer usa HTTPS).
+          - Id: ec2-backend
+            DomainName: !GetAtt BackendInstance.PublicDnsName
+            CustomOriginConfig:
+              HTTPPort: !Ref ApiPort
+              OriginProtocolPolicy: http-only
+        DefaultCacheBehavior:
+          TargetOriginId: s3-frontend
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          Compress: true
+        # La API va por CloudFront para evitar mixed-content en el navegador:
+        # https://<cloudfront>/api/* -> http://<ec2>:3000/api/*.
+        # Sin cache (respuestas autenticadas) y reenviando Authorization.
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: ec2-backend
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            Compress: false
+            # Políticas gestionadas por AWS (IDs globales estables):
+            # CachingDisabled: sin caché. AllViewer: reenvía todo
+            # (headers incl. Authorization, query strings y cookies).
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-frontend-cdn'
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${FrontendBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}'
+
+  # ---------------- Lambda de metricas (reutiliza lambda/dashboard) ----------------
+  DashboardMetricsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-dashboard-metrics'
+      Runtime: nodejs22.x
+      Handler: src/handler.handler
+      CodeUri: ../lambda/dashboard
+      MemorySize: 128
+      Timeout: 10
+      Events:
+        MetricsPost:
+          Type: Api
+          Properties:
+            Method: POST
+            Path: /metrics
+
+Outputs:
+  CloudFrontURL:
+    Description: URL publica del frontend
+    Value: !Sub 'https://${FrontendDistribution.DomainName}'
+  FrontendBucketName:
+    Description: Bucket S3 del frontend (para subir archivos e invalidaciones)
+    Value: !Ref FrontendBucket
+  MetricsApiUrl:
+    Description: URL POST de la Lambda de metricas (usar como LAMBDA_METRICS_URL en EC2)
+    Value: !Sub 'https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/metrics'
+  EC2PublicIp:
+    Description: IP publica de la instancia backend
+    Value: !GetAtt BackendInstance.PublicIp
+  EC2PublicDns:
+    Description: DNS publico de la instancia backend
+    Value: !GetAtt BackendInstance.PublicDnsName
+  BackendApiUrl:
+    Description: URL directa del backend en EC2 (diagnostico; el frontend AWS usa https://<CloudFront>/api)
+    Value: !Sub 'http://${BackendInstance.PublicDnsName}:${ApiPort}'
+  Region:
+    Description: Region del despliegue
+    Value: !Ref AWS::Region

@@ -1,0 +1,60 @@
+# Team Notes Portal - entorno local con Docker Compose.
+# Las variables se leen del archivo .env en esta misma carpeta
+# (copiar .env.example a .env y ajustar valores; no commitear secretos).
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: team-notes-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-team_notes}
+      MYSQL_USER: ${MYSQL_USER:-teamnotes}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      # Solo para inspección local (el backend usa la red interna).
+      # Puerto distinto de 3306 para no chocar con un MySQL del host.
+      - "3308:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  backend:
+    build: ./backend
+    container_name: team-notes-backend
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: ${MYSQL_DATABASE:-team_notes}
+      DB_USER: ${MYSQL_USER:-teamnotes}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # SAM Local corre en el host; desde el contenedor se alcanza vía host.docker.internal.
+      LAMBDA_METRICS_URL: ${LAMBDA_METRICS_URL:-http://host.docker.internal:3001/metrics}
+    ports:
+      - "3000:3000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: team-notes-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:

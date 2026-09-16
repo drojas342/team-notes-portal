@@ -1,0 +1,10 @@
+{
+  "Parameters": {
+    "ProjectName": "team-notes-dev",
+    "InstanceType": "t3.micro",
+    "KeyPairName": "team-notes-dev-key-3",
+    "SSHLocation": "38.191.211.90/32",
+    "ApiPort": "3000",
+    "VolumeSize": "20"
+  }
+}
